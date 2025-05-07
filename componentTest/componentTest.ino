@@ -7,7 +7,10 @@ int startPin = 4;
 #define distRS A2
 #define distPS A0
 
-int m1A=6, m1B=5, m2A=10, m2B=9; 
+int m1A=6, m1B=5, m2A=10, m2B=9;
+int pastFrontDistances[5] = {9999,9999,9999,9999,9999};
+int pastRightDistances[5] = {9999,9999,9999,9999,9999};
+long pastDistanceTime = 0;
 
 //code logic
 //start sequences
@@ -22,7 +25,7 @@ int m1A=6, m1B=5, m2A=10, m2B=9;
 //3 - bounce (line detection) - always happening, highest priority if triggered
 // on start, after turn left, start locked in but look out for edge
 
-int state = 0;
+int state = 0, startSequence = 0;
 
 //value holders
 Adafruit_VL53L0X distF = Adafruit_VL53L0X();
@@ -32,7 +35,7 @@ VL53L0X_RangingMeasurementData_t measure2;
 
 int distForward = 0, distRight = 0;
 int lineL = 0, lineR = 0; 
-bool started = false, ramStart = false;
+bool started = false;
 
 int currentSpeed = 0;
 
@@ -65,39 +68,55 @@ void setup() {
       seq2++;
     delay(100);
   }
-  ramStart=seq1>seq2;
+  
+  if(seq1+seq2 < 5)
+    startSequence = 0;
+  else if(seq1<seq2)
+    startSequence = 1;
+  else
+    startSequence = 2;
+    
   Serial.print("choice made ");
-  Serial.println(ramStart);
+  Serial.println(startSequence);
+  pastDistanceTime = millis();
 }
 
 void loop() {
   while(!started){
     if(digitalRead(startPin)==LOW){
       Serial.println("button pressed");
-      if(ramStart) Serial.println("ram start");
-      else Serial.println("move start");
+      if(startSequence==0) 
+        Serial.println("move start");
+      else if(startSequence==1)
+        Serial.println("ram start");
+      else
+        Serial.println("move ram start");
       started=true;
       for(int i = 5; i>0; i--){
         Serial.println(i);
         delay(1000);
       }     
 
-      if(ramStart){
+      if(startSequence==1){ // ram
         turnLeft(200, 500); // 90 deg turn
         moveForward(240, 3000);
       }
-      else {
+      else if(startSequence==0){ // move away
         moveBackward(240, 1000);
+      }
+      else { // move ram
+          moveBackward(240,1000);
+          stopMoving(1000);
+          moveMotors(200, 140, 1000);
       }
     }
   }
 
   
-  getDistances();
     
   lineL = analogRead(line1S); 
   lineR = analogRead(line2S); 
-
+  // priority - state 3
   if(lineL>400 && lineR>400){ // move back straight
     moveBackward(180, 1000);
     turnRight(180, 500); //turn around
@@ -110,12 +129,56 @@ void loop() {
     moveMotors(-140, -180, 1000);
     turnRight(180, 500); // turn around
   }
-
   // at this point, line edge detection is handled. no delays from this point onward
 
   // looking at distance measures, decide between state, and modify motor movement
-
-
+    getDistances();
+    if(state==0) { // searching
+        if(distRight<100 || distForward<100){ // start honing
+            state=1;
+        }
+        else { // keep searching
+            turnRight(130, 0);
+        }
+    }
+    
+    if(state==1) { // honing
+        // make use of past distances while slowly approaching
+        // if front distance is close enough, switch to ram state
+        if(distForward<50 && distRight>80)
+            state=2;
+        
+        else if(distForward<100 || distRight<100) {
+            //check past distances and distRight to pivot
+            // move according to pivot
+        }
+        
+        else
+            state=0;
+        // if nothing in view, switch back to search
+    }
+    
+    if(state==2) {
+        //if closer, become faster
+        //if nothing in view, switch back to search
+        if(distForward<20)
+            moveForward(240, 0);
+        else if(distForward<50)
+            moveForward(200, 0);
+        else 
+            state=1; // switch to honing
+    }
+    
+    
+    if(pastDistanceTime<millis()){ // update past distances
+        pastDistanceTime=millis()+100;
+        for(int i = 4; i>0; i++){
+            pastFrontDistances[i]=pastFrontDistances[i-1];
+            pastRightDistances[i]=pastRightDistances[i-1];
+        }
+        pastFrontDistances[0]=distForward;
+        pastRightDistances[0]=distRight;
+    }
 }
 
 void turnLeft(int spe, int ms) {
